@@ -1,8 +1,7 @@
 import streamlit as st
-import os
 if not st.session_state.get("processing_complete"):
     st.switch_page("app1.py")
-from neo4j import GraphDatabase
+import shutil
 
 st.title("🌐 Repo Whisperer")
 
@@ -22,9 +21,7 @@ with st.container(border=True):
             pass
 
 if st.button("🗑️ Clear Database"):
-    driver = GraphDatabase.driver(os.getenv("NEO4J_URI"), auth=(os.getenv("NEO4J_USER"), os.getenv("NEO4J_PWD")))
-    with driver.session() as session: session.run("MATCH (n) DETACH DELETE n")
-    driver.close()
+    shutil.rmtree(st.session_state.temp_dir)
     st.session_state.processing_complete = False
     st.session_state.messages = []
     st.success("Database wiped.")
