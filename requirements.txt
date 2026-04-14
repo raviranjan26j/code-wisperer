@@ -1,11 +1,2 @@
 streamlit
 GitPython
-neo4j
-tree-sitter
-tree-sitter-typescript
-tree-sitter-javascript
-tree-sitter-java
-tree-sitter-html
-tree-sitter-css
-tree-sitter-python
-langchain-groq
