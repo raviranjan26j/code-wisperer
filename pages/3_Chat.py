@@ -1,30 +1,54 @@
 import streamlit as st
-import os
 if not st.session_state.get("processing_complete"):
     st.switch_page("app1.py")
-from langchain_groq import ChatGroq
-from neo4j import GraphDatabase
+
+import asyncio
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain.agents import create_agent
+from langchain_nvidia_ai_endpoints import ChatNVIDIA
 
 st.title("🌐 Repo Whisperer")
 
-# Configuration (In production, use secrets)
-NEO4J_URI = os.getenv("NEO4J_URI", "neo4j+s://55ec7d9e.databases.neo4j.io")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PWD = os.getenv("NEO4J_PWD")
-api_key = os.getenv("GROQ_API_KEY")
-model = ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=api_key, temperature=0)
+async def get_repo_data(prompt):
+    print("Starting MCP client...")
+    client = MultiServerMCPClient(
+        {
+            "gitnexus": {
+                "transport": "stdio",
+                "command": "npx",
+                "args": ["-y", "gitnexus", "mcp"]
+            }
+        }
+    )
+    print("MCP client started...")
 
-@st.cache_resource
-def get_driver():
-    return GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PWD))
+    tools = await client.get_tools()
+    print("Tools fetched...")
+ 
+    client = ChatNVIDIA(
+        model="meta/llama-3.1-70b-instruct",
+        api_key="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", 
+        temperature=0.2,
+        top_p=0.7,
+        max_completion_tokens=1024,
+    )   
 
-def retrieve_code(prompt):
-    driver = get_driver()
-    with driver.session() as session:
-        # Note: Updated to use full-text index query
-        query = 'CALL db.index.fulltext.queryNodes("code_index", $prompt) YIELD node, score RETURN node.name AS name, node.code AS code LIMIT 5'
-        results = session.run(query, prompt=prompt).data()
-    return results
+    agent = create_agent(
+        client,   # or claude
+        tools
+    )
+    print("Agent created...")
+
+    system_prompt = """
+    You are a helpful assistant. Use temp_repo as the repository name.
+    """
+
+    result = await agent.ainvoke({
+        "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
+    })
+    print("Result fetched...")
+
+    return result['messages'][-1].content
 
 st.markdown("""
     <style>
@@ -65,27 +89,19 @@ with st.container(border=True):
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
-# 1. Create a container with fixed height to hold the messages
-# This pushes everything below it to the bottom of this container
 chat_container = st.container(height=350, border=True)
 with chat_container:
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]): 
             st.markdown(msg["content"])
-# 2. This input will now appear at the bottom of the container above
 if prompt := st.chat_input("Ask about your code..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"): 
         st.markdown(prompt)
-        
     with st.spinner("Searching..."):
-        retrieved = retrieve_code(prompt)
-        context = "\n\n".join([f"Name: {r['name']}\nCode: {r['code']}" for r in retrieved]) if retrieved else "No code found."
-        response = model.invoke(f"Context: {context}\nQuestion: {prompt}")
-        
+        retrieved = asyncio.run(get_repo_data(prompt))
+        print(f"Retrieved: {retrieved}")
     with st.chat_message("assistant"): 
-        st.markdown(response.content)
-    st.session_state.messages.append({"role": "assistant", "content": response.content})
-    
-    # Rerun to update the chat_container
+        st.markdown(retrieved)
+    st.session_state.messages.append({"role": "assistant", "content": retrieved})
     st.rerun()
