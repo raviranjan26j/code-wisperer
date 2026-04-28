@@ -6,49 +6,94 @@ import asyncio
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain.agents import create_agent
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
+from langchain.tools import tool
+import os
 
-st.title("🌐 Repo Whisperer")
+@tool
+def read_repository_file(file_path: str):
+    """
+    Read the raw content of a file from the repository. 
+    Use this when the user asks for the source code of a specific file.
+    The path should be relative to the repository root (e.g., 'src/main.py').
+    """
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(current_dir)
+    repo_path = os.path.join(project_root, "temp_repo")
+    full_path = os.path.join(repo_path, file_path)
+    
+    if not os.path.exists(full_path):
+        return f"Error: File '{file_path}' not found in repository."
+    
+    try:
+        with open(full_path, "r", encoding="utf-8") as f:
+            content = f.read()
+            return content
+    except Exception as e:
+        return f"Error reading file '{file_path}': {e}"
 
 async def get_repo_data(prompt):
-    print("Starting MCP client...")
-    client = MultiServerMCPClient(
-        {
-            "gitnexus": {
-                "transport": "stdio",
-                "command": "npx",
-                "args": ["-y", "gitnexus", "mcp"]
+    try:
+        mcp_client = MultiServerMCPClient(
+            {
+                "gitnexus": {
+                    "transport": "stdio",
+                    "command": "npx",
+                    "args": ["-y", "gitnexus", "mcp"]
+                }
             }
-        }
-    )
-    print("MCP client started...")
+        )
+        
+        mcp_tools = await mcp_client.get_tools()
+        tools = list(mcp_tools) + [read_repository_file]
+     
+        llm = ChatNVIDIA(
+            model="meta/llama-3.1-70b-instruct",
+            api_key="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", 
+            temperature=0.2,
+            top_p=0.7,
+            max_completion_tokens=1024,
+        )   
 
-    tools = await client.get_tools()
-    print("Tools fetched...")
- 
-    client = ChatNVIDIA(
-        model="meta/llama-3.1-70b-instruct",
-        api_key="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", 
-        temperature=0.2,
-        top_p=0.7,
-        max_completion_tokens=1024,
-    )   
+        agent = create_agent(
+            llm,
+            tools
+        )
 
-    agent = create_agent(
-        client,   # or claude
-        tools
-    )
-    print("Agent created...")
+        system_prompt = """
+        You are 'Repo Whisperer', an AI assistant designed to help developers analyze and understand their codebase.
+        - You can answer general greetings and conversation.
+        - For repository-specific questions, use your tools to query the code or read file contents.
+        - If you need structural info (like "which file has many references"), use the 'cypher' tool.
+        
+        Knowledge Graph Schema:
+        - Nodes: File (attr: filePath), Symbol (attr: name)
+        - Relationships: File -[:IMPORT]-> File, File -[:HAS_SYMBOL]-> Symbol
+        
+        Example Cypher for "lots of references":
+        MATCH (f:File)<-[r:IMPORT]-(other) RETURN f.filePath, count(r) ORDER BY count(r) DESC LIMIT 5
 
-    system_prompt = """
-    You are a helpful assistant. Use temp_repo as the repository name.
-    """
+        - Use 'read_repository_file' to get the actual source code of a file if requested.
+        - Use 'temp_repo' as the target repository name.
+        - If you don't need a tool to answer (like for "hi"), just reply directly.
+        """
 
-    result = await agent.ainvoke({
-        "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
-    })
-    print("Result fetched...")
+        result = await agent.ainvoke({
+            "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
+        })
 
-    return result['messages'][-1].content
+        if isinstance(result, dict) and 'messages' in result:
+            return result['messages'][-1].content
+        else:
+            # Fallback for different response formats
+            if hasattr(result, 'content'):
+                return result.content
+            return str(result)
+            
+    except Exception as e:
+        st.error(f"Error in get_repo_data: {e}")
+        return f"An error occurred: {e}"
+
+
 
 st.markdown("""
     <style>
@@ -89,19 +134,25 @@ with st.container(border=True):
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
 chat_container = st.container(height=350, border=True)
 with chat_container:
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]): 
             st.markdown(msg["content"])
+
 if prompt := st.chat_input("Ask about your code..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"): 
-        st.markdown(prompt)
-    with st.spinner("Searching..."):
+    with chat_container:
+        with st.chat_message("user"): 
+            st.markdown(prompt)
+    
+    with st.spinner("Thinking..."):
         retrieved = asyncio.run(get_repo_data(prompt))
-        print(f"Retrieved: {retrieved}")
-    with st.chat_message("assistant"): 
-        st.markdown(retrieved)
+    
+    with chat_container:
+        with st.chat_message("assistant"): 
+            st.markdown(retrieved)
+    
     st.session_state.messages.append({"role": "assistant", "content": retrieved})
     st.rerun()
