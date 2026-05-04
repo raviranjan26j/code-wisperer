@@ -150,6 +150,45 @@ def fetch_impact_radius():
     except Exception as e:
         st.error(f"Error fetching Impact Radius: {e}")
 
+
+def fetch_process_flows():
+    current_file_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(current_file_dir)
+    repo_path = os.path.join(project_root, "temp_repo")
+
+    query = "MATCH (n:Process) RETURN n.id, n.label, n.processType, n.stepCount ORDER BY n.stepCount DESC"
+
+    try:
+        with st.spinner("Tracing Process Flows..."):
+            result = subprocess.run(
+                ["npx", "-y", "gitnexus", "cypher", "--repo", "temp_repo", query],
+                cwd=repo_path,
+                capture_output=True,
+                text=True
+            )
+            if result.returncode == 0:
+                output = result.stdout
+                data = json.loads(output)
+                processes = []
+                if "markdown" in data:
+                    lines = data["markdown"].split('\n')
+                    for line in lines:
+                        if "|" in line and "n.id" not in line and "---" not in line:
+                            parts = [p.strip() for p in line.split('|') if p.strip()]
+                            if len(parts) == 4:
+                                try:
+                                    processes.append({
+                                        "ID": parts[0],
+                                        "Process": parts[1],
+                                        "Type": parts[2],
+                                        "Steps": int(parts[3])
+                                    })
+                                except (ValueError, IndexError):
+                                    continue
+                st.session_state.process_flows = processes
+    except Exception as e:
+        st.error(f"Error fetching Process Flows: {e}")
+
 def analyze_top_files_risk(top_files):
     risks = []
     current_file_dir = os.path.dirname(os.path.abspath(__file__))
@@ -400,6 +439,7 @@ if "criticality_index" in st.session_state:
     if st.button("📊 Re-fetch AI Insights", type="primary"):
         fetch_criticality_index()
         fetch_impact_radius()
+        fetch_process_flows()
         st.rerun()
 
     # 4. Display AI Maintenance Risk Score
@@ -468,7 +508,59 @@ if "criticality_index" in st.session_state:
         fig_impact.update_layout(yaxis={'categoryorder':'total ascending'}, height=400)
         st.plotly_chart(fig_impact, use_container_width=True)
 
-    # 4. Advanced Metrics Section
+
+    # 6. Process Flows (Intra vs Cross-Community)
+    if "process_flows" in st.session_state:
+        st.write("---")
+        st.subheader("🔄 Process Flows", help="End-to-end execution paths traced through the knowledge graph. Intra-community = low coupling. Cross-community = flows that cross module boundaries = higher integration risk.")
+        st.info("**Cross-community** processes span multiple modules — a high proportion signals tight inter-module coupling.")
+
+        proc_data = st.session_state.process_flows
+        if proc_data:
+            proc_df = pd.DataFrame(proc_data)
+
+            # Add emoji badge for type
+            proc_df["Type Badge"] = proc_df["Type"].apply(
+                lambda t: "🟢 intra" if t == "intra_community" else "🔴 cross"
+            )
+
+            intra_count = (proc_df["Type"] == "intra_community").sum()
+            cross_count  = (proc_df["Type"] == "cross_community").sum()
+            total_count  = len(proc_df)
+
+            # Summary metrics
+            pm1, pm2, pm3 = st.columns(3)
+            pm1.metric("Total Processes", total_count)
+            pm2.metric("🟢 Intra-Community", intra_count, help="Stays within one module — low coupling")
+            pm3.metric("🔴 Cross-Community", cross_count, help="Crosses module boundaries — integration risk")
+
+            # Donut chart
+            if total_count > 0:
+                pie_df = pd.DataFrame({
+                    "Type": ["Intra-Community", "Cross-Community"],
+                    "Count": [intra_count, cross_count]
+                })
+                fig_pie = px.pie(
+                    pie_df, values="Count", names="Type",
+                    title="Process Type Distribution",
+                    color="Type",
+                    color_discrete_map={"Intra-Community": "#27ae60", "Cross-Community": "#e74c3c"},
+                    hole=0.45
+                )
+                fig_pie.update_traces(textinfo="percent+label")
+                st.plotly_chart(fig_pie, use_container_width=True)
+
+            # Detailed table
+            st.write("#### Process Detail")
+            st.dataframe(
+                proc_df[["Process", "Type Badge", "Steps"]].rename(columns={"Type Badge": "Type"}),
+                hide_index=True,
+                use_container_width=True
+            )
+        else:
+            st.info("No process flow data found. Re-run `gitnexus analyze` on the repository.")
+
+    # 7. Advanced Metrics Section
     st.write("---")
     st.subheader("🛠️ Advanced Developer Insights")
 
@@ -527,6 +619,7 @@ else:
     if st.button("📊 Fetch AI Insights", type="primary"):
         fetch_criticality_index()
         fetch_impact_radius()
+        fetch_process_flows()
         st.rerun()
 
 st.write("---")
