@@ -1,6 +1,4 @@
 import streamlit as st
-if not st.session_state.get("processing_complete"):
-    st.switch_page("app1.py")
 import shutil
 
 st.title("🌐 Repo Whisperer")
