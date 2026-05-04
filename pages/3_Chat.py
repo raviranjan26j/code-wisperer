@@ -14,7 +14,7 @@ def read_repository_file(file_path: str):
     """
     Read the raw content of a file from the repository. 
     Use this when the user asks for the source code of a specific file.
-    The path should be relative to the repository root (e.g., 'src/main.py').
+    The path should be relative to the repository root (e.g., 'src/main.ts').
     """
     current_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(current_dir)
@@ -27,25 +27,33 @@ def read_repository_file(file_path: str):
     try:
         with open(full_path, "r", encoding="utf-8") as f:
             content = f.read()
+            # Prevent massive files from blowing up the context window
+            if len(content) > 20000:
+                return content[:20000] + f"\n\n...[TRUNCATED: File exceeds 20,000 characters. Length was {len(content)}]"
             return content
     except Exception as e:
         return f"Error reading file '{file_path}': {e}"
 
 async def get_repo_data(prompt):
     try:
-        mcp_client = MultiServerMCPClient(
-            {
-                "gitnexus": {
-                    "transport": "stdio",
-                    "command": "npx",
-                    "args": ["-y", "gitnexus", "mcp"]
+        # Use cached MCP tools from session state to avoid spawning a new
+        # npx subprocess on every message. We also use `async with` so the
+        # client (and its subprocess) is properly cleaned up after use when
+        # the tools are first fetched.
+        if "mcp_client" not in st.session_state:
+            st.session_state["mcp_client"] = MultiServerMCPClient(
+                {
+                    "gitnexus": {
+                        "transport": "stdio",
+                        "command": "npx",
+                        "args": ["-y", "gitnexus", "mcp"]
+                    }
                 }
-            }
-        )
-        
-        mcp_tools = await mcp_client.get_tools()
-        tools = list(mcp_tools) + [read_repository_file]
-     
+            )
+            st.session_state["mcp_tools"] = await st.session_state["mcp_client"].get_tools()
+
+        tools = list(st.session_state["mcp_tools"]) + [read_repository_file]
+
         llm = ChatNVIDIA(
             model="meta/llama-3.1-70b-instruct",
             api_key="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", 
@@ -69,10 +77,13 @@ async def get_repo_data(prompt):
         - Nodes: File (attr: filePath), Symbol (attr: name)
         - Relationships: File -[:IMPORT]-> File, File -[:HAS_SYMBOL]-> Symbol
         
+        CRITICAL RULES FOR PREVENTING CONTEXT OVERFLOW:
+        1. Cypher Tool: ALWAYS append `LIMIT 10` (or fewer) to your Cypher queries. NEVER query for all nodes/edges without a strict limit, as this will crash the system.
+        2. Reading Files: Only read specific files if specifically requested, and be aware their contents may be truncated.
+
         Example Cypher for "lots of references":
         MATCH (f:File)<-[r:IMPORT]-(other) RETURN f.filePath, count(r) ORDER BY count(r) DESC LIMIT 5
 
-        - Use 'read_repository_file' to get the actual source code of a file if requested.
         - Use 'temp_repo' as the target repository name.
         - If you don't need a tool to answer (like for "hi"), just reply directly.
         """
